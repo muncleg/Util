@@ -64,7 +64,7 @@ public sealed class TimeManager : Singleton<TimeManager>
     /// <summary>
     /// 현재 유닉스 타임스탬프
     /// </summary>
-    public long currentUnixTimestamp => ((DateTimeOffset) currentTime).ToUnixTimeSeconds();
+    public long currentUnixTimestamp => ((DateTimeOffset)currentTime).ToUnixTimeSeconds();
 
     /// <summary>
     /// 현재 틱(Tick)
@@ -94,7 +94,7 @@ public sealed class TimeManager : Singleton<TimeManager>
         get
         {
             DayOfWeek today = this.today.DayOfWeek;
-            int daysToAdd = ((int) resetDayOfWeek - (int) today + 7) % 7;
+            int daysToAdd = ((int)resetDayOfWeek - (int)today + 7) % 7;
             if (daysToAdd == 0)
             {
                 daysToAdd = 7;
@@ -202,7 +202,7 @@ public sealed class TimeManager : Singleton<TimeManager>
     private IEnumerator TimeProgress()
     {
         double decimalTime = startSinceTime % 1;
-        yield return new WaitForSecondsRealtime((float) (1.0 - decimalTime));
+        yield return new WaitForSecondsRealtime((float)(1.0 - decimalTime));
 
         while (true)
         {
@@ -251,17 +251,18 @@ public sealed class TimeManager : Singleton<TimeManager>
 
     public void GetCurrentTime(Action func = null)
     {
-        // 필요에 따라 로딩 팝업, 혹은 게임 일시정지 기능이 필요.
-        // 서버에서 주는 타입에따라 long 혹은 Datetime 등 타입에 따른 처리.
+        // // 필요에 따라 로딩 팝업, 혹은 게임 일시정지 기능이 필요.
+        // // 서버에서 주는 타입에따라 long 혹은 Datetime 등 타입에 따른 처리.
         // var request = new GetTimeRequest { };
         // PlayFabClientAPI.GetTime(request, (result) =>
         // {
-        //     ServerTime = result.Time;
         //     func?.Invoke();
+        //     return result.time;
         // },
         // (error) =>
         // {
         //     //결과에 따른 에러처리.
+        //     return 0;
         // });
     }
     #endregion
