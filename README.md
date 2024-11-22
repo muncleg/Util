@@ -10,3 +10,15 @@
 # 애니메이션툴
 
 목적 : 특수한 상황에 맞춘 자동 프리팹 생성기 업무 효율을 위해 제작
+
+
+상황.
+해당 폴더 형태
+https://github.com/user-attachments/assets/e0740845-d0d1-4202-bc40-e1661f1c801b
+
+내부 스프라이트 형태
+https://github.com/user-attachments/assets/6e8c7fea-99c4-45e1-bf0c-eb993d278bc4
+
+완료 된 프리팹
+https://github.com/user-attachments/assets/3bbe21c9-df8a-4eac-9107-109ea8cf5c89
+
