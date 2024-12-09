@@ -1,61 +1,37 @@
-using System.Collections.Generic;
-using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.AddressableAssets;
 using UnityEngine.ResourceManagement.AsyncOperations;
-
+using Cysharp.Threading.Tasks;
 
 public class AddressableManager : Singleton<AddressableManager>
 {
-    private readonly Dictionary<string, object> loadedAssets = new Dictionary<string, object>();
-
-    public async Task<T> LoadAssetAsync<T>(string key) where T : UnityEngine.Object
+    /// <summary>
+    /// Addressables를 통해 비동기 인스턴스화 후 반환 (UniTask 기반)
+    /// </summary>
+    public async UniTask<GameObject> InstantiateAsync(string key, Vector3 position, Quaternion rotation, Transform parent = null)
     {
-        if (loadedAssets.TryGetValue(key, out object loadedAsset))
+        AsyncOperationHandle<GameObject> handle = Addressables.InstantiateAsync(key, position, rotation, parent);
+        await handle.Task.AsUniTask(); // Task -> UniTask 변환을 통해 await
+
+        if (handle.Status == AsyncOperationStatus.Succeeded)
         {
-            return loadedAsset as T;
+            return handle.Result;
         }
         else
         {
-            try
-            {
-                AsyncOperationHandle<T> handle = Addressables.LoadAssetAsync<T>(key);
-                await handle.Task;
-
-                if (handle.Status == AsyncOperationStatus.Succeeded)
-                {
-                    loadedAssets[key] = handle.Result;
-                    return handle.Result;
-                }
-                else
-                {
-                    Debug.LogError($"[AddressableManager] 자산 로드 실패: {key}");
-                    return null;
-                }
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"[AddressableManager] 자산 로드 중 예외 발생: {key}, {e.Message}");
-                return null;
-            }
+            Debug.LogError($"[AddressableManager] InstantiateAsync 실패: {key}");
+            return null;
         }
     }
 
-    public void ReleaseAsset(string key)
+    /// <summary>
+    /// Addressables 인스턴스 해제
+    /// </summary>
+    public void ReleaseInstance(GameObject instance)
     {
-        if (loadedAssets.TryGetValue(key, out object asset))
+        if (instance != null)
         {
-            Addressables.Release(asset);
-            loadedAssets.Remove(key);
+            Addressables.ReleaseInstance(instance);
         }
-    }
-
-    public void ReleaseAllAssets()
-    {
-        foreach (var asset in loadedAssets.Values)
-        {
-            Addressables.Release(asset);
-        }
-        loadedAssets.Clear();
     }
 }
