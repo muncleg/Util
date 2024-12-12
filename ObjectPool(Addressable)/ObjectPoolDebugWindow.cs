@@ -12,6 +12,12 @@ public class ObjectPoolDebugWindow : EditorWindow
         GetWindow<ObjectPoolDebugWindow>("Object Pool Debug");
     }
 
+    private void OnInspectorUpdate()
+    {
+        // 자동 갱신
+        Repaint();
+    }
+
     private void OnGUI()
     {
         if (!Application.isPlaying)
@@ -20,14 +26,15 @@ public class ObjectPoolDebugWindow : EditorWindow
             return;
         }
 
-        if (ObjectPoolManager.Instance == null)
+        var manager = ObjectPoolManager.Instance;
+        if (manager == null)
         {
             GUILayout.Label("ObjectPoolManager 인스턴스가 없음.", EditorStyles.boldLabel);
             return;
         }
 
         GUILayout.Label("현재 풀 상태:", EditorStyles.boldLabel);
-        var info = ObjectPoolManager.Instance.GetPoolInfo();
+        var info = manager.GetPoolInfo();
         if (info.Count == 0)
         {
             GUILayout.Label("풀에 아무것도 없습니다.");
@@ -44,7 +51,7 @@ public class ObjectPoolDebugWindow : EditorWindow
         showDetails = EditorGUILayout.Foldout(showDetails, "Show Detailed Info");
         if (showDetails)
         {
-            var detailedInfo = ObjectPoolManager.Instance.GetDetailedPoolInfo();
+            var detailedInfo = manager.GetDetailedPoolInfo();
             foreach (var kvp in detailedInfo)
             {
                 string key = kvp.Key;
@@ -60,11 +67,11 @@ public class ObjectPoolDebugWindow : EditorWindow
 
                 for (int i = 0; i < list.Count; i++)
                 {
-                    var (objName, timeInPool, timeUntilCleanup) = list[i];
+                    var infoItem = list[i];
                     EditorGUILayout.BeginHorizontal();
-                    EditorGUILayout.LabelField(objName, GUILayout.Width(100));
-                    EditorGUILayout.LabelField(timeInPool.ToString("F2"), GUILayout.Width(100));
-                    EditorGUILayout.LabelField(timeUntilCleanup.ToString("F2"), GUILayout.Width(130));
+                    EditorGUILayout.LabelField(infoItem.objName, GUILayout.Width(100));
+                    EditorGUILayout.LabelField(infoItem.timeInPool.ToString("F2"), GUILayout.Width(100));
+                    EditorGUILayout.LabelField(infoItem.timeUntilCleanup.ToString("F2"), GUILayout.Width(130));
                     EditorGUILayout.EndHorizontal();
                 }
 
@@ -75,7 +82,7 @@ public class ObjectPoolDebugWindow : EditorWindow
         EditorGUILayout.Space();
         if (GUILayout.Button("Clear All Pools"))
         {
-            ObjectPoolManager.Instance.ClearAll();
+            manager.ClearAll();
             Debug.Log("[ObjectPoolDebugWindow] All pools cleared.");
         }
     }

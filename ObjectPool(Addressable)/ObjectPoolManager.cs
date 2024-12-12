@@ -5,14 +5,22 @@ using System.Linq;
 
 public class ObjectPoolManager : Singleton<ObjectPoolManager>
 {
-    private readonly Dictionary<string, Queue<GameObject>> gameObjectPools = new Dictionary<string, Queue<GameObject>>();
-    private readonly Dictionary<GameObject, float> lastUsedTime = new Dictionary<GameObject, float>();
+    private Dictionary<string, Queue<GameObject>> gameObjectPools = new Dictionary<string, Queue<GameObject>>();
+    private Dictionary<GameObject, float> lastUsedTime = new Dictionary<GameObject, float>();
 
-    private const float CLEANUP_INTERVAL = 10f;     // 몇 초마다 정리
-    private const float OBJECT_LIFETIME = 30f;      // 풀에 방치된 오브젝트 유지 시간
+    [Header("Settings")]
+    [SerializeField] private float cleanupInterval = 10f;
+    [SerializeField] private float objectLifetime = 30f;
 
-    protected void Awake()
+    [Header("Debug / Test")]
+    [SerializeField] private bool testModeOn = false;
+
+    // 테스트 모드 전용 : 컨테이너 관리
+    private Dictionary<string, GameObject> t_ContainerDict;
+
+    private void Awake()
     {
+        t_ContainerDict = new Dictionary<string, GameObject>();
         CleanupRoutine().Forget();
     }
 
@@ -20,7 +28,7 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
     {
         while (true)
         {
-            await UniTask.Delay((int)(CLEANUP_INTERVAL * 1000));
+            await UniTask.Delay((int)(cleanupInterval * 1000));
             CleanUpOldObjects();
         }
     }
@@ -28,9 +36,7 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
     private void CleanUpOldObjects()
     {
         float now = Time.time;
-
-        // 성능 최적화: LINQ 제거
-        List<string> keys = new List<string>(gameObjectPools.Keys);
+        var keys = gameObjectPools.Keys.ToList();
 
         for (int i = 0; i < keys.Count; i++)
         {
@@ -44,12 +50,11 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
                 GameObject obj = pool.Dequeue();
                 if (lastUsedTime.TryGetValue(obj, out float usedTime))
                 {
-                    float timeInPool = Time.time - usedTime;
-                    if (timeInPool > OBJECT_LIFETIME)
+                    float timeInPool = now - usedTime;
+                    if (timeInPool > objectLifetime)
                     {
                         AddressableManager.Instance.ReleaseInstance(obj);
                         lastUsedTime.Remove(obj);
-                        // Debug.Log($"[ObjectPoolManager] 오래된 오브젝트 파괴: {obj.name}, Key: {key}");
                     }
                     else
                     {
@@ -58,7 +63,6 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
                 }
                 else
                 {
-                    // 기록 없으면 지금 기록
                     lastUsedTime[obj] = Time.time;
                     remaining.Add(obj);
                 }
@@ -68,6 +72,11 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
             {
                 pool.Enqueue(remaining[j]);
             }
+
+            if (testModeOn)
+            {
+                UpdateContainerName(key);
+            }
         }
     }
 
@@ -76,28 +85,40 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
         if (!gameObjectPools.ContainsKey(key))
         {
             gameObjectPools[key] = new Queue<GameObject>();
+            if (testModeOn) CreateContainerForKey(key);
         }
 
-        Queue<GameObject> pool = gameObjectPools[key];
+        var pool = gameObjectPools[key];
 
+        GameObject obj;
         if (pool.Count > 0)
         {
-            GameObject obj = pool.Dequeue();
+            obj = pool.Dequeue();
             lastUsedTime.Remove(obj);
-            obj.transform.SetPositionAndRotation(position, rotation);
-            obj.transform.parent = parent;
-            obj.SetActive(true);
-            return obj;
         }
-
-        GameObject newObj = await AddressableManager.Instance.InstantiateAsync(key, position, rotation, parent);
-        if (newObj == null)
+        else
         {
-            Debug.LogError($"[ObjectPoolManager] 스폰 실패: {key}");
-            return null;
+            GameObject newObj = await AddressableManager.Instance.InstantiateAsync(key, position, rotation, parent);
+            if (newObj == null)
+            {
+                Debug.LogError($"[ObjectPoolManager] 스폰 실패: {key}");
+                return null;
+            }
+
+            obj = newObj;
         }
 
-        return newObj;
+        obj.transform.SetPositionAndRotation(position, rotation);
+        obj.transform.parent = parent;
+        obj.SetActive(true);
+
+        if (testModeOn)
+        {
+            SetParentToContainer(key, obj);
+            UpdateContainerName(key);
+        }
+
+        return obj;
     }
 
     public void Despawn(string key, GameObject obj)
@@ -111,21 +132,49 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
         if (!gameObjectPools.ContainsKey(key))
         {
             gameObjectPools[key] = new Queue<GameObject>();
+            if (testModeOn) CreateContainerForKey(key);
         }
 
         obj.SetActive(false);
         obj.transform.parent = this.transform;
         gameObjectPools[key].Enqueue(obj);
-        lastUsedTime[obj] = Time.time; // 반환 시간 기록
+        lastUsedTime[obj] = Time.time;
+
+        if (testModeOn)
+        {
+            UpdateContainerName(key);
+        }
+    }
+
+    public void Despawn(string key, GameObject obj, float delay)
+    {
+        if (delay <= 0f)
+        {
+            Despawn(key, obj);
+        }
+        else
+        {
+            DespawnDelayed(key, obj, delay).Forget();
+        }
+    }
+
+    private async UniTaskVoid DespawnDelayed(string key, GameObject obj, float delay)
+    {
+        await UniTask.Delay((int)(delay * 1000));
+        if (obj == null) return;
+        if (obj.activeSelf)
+        {
+            Despawn(key, obj);
+        }
     }
 
     public void ClearPool(string key)
     {
-        if (gameObjectPools.TryGetValue(key, out Queue<GameObject> pool))
+        if (gameObjectPools.TryGetValue(key, out var pool))
         {
             while (pool.Count > 0)
             {
-                GameObject obj = pool.Dequeue();
+                var obj = pool.Dequeue();
                 if (obj != null)
                 {
                     AddressableManager.Instance.ReleaseInstance(obj);
@@ -133,9 +182,9 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
                 }
             }
             gameObjectPools.Remove(key);
-        }
 
-        // 필요시: AddressableManager.Instance.ReleaseAsset(key);
+            if (testModeOn) RemoveContainer(key);
+        }
     }
 
     public void ClearAll()
@@ -145,7 +194,7 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
             var pool = kvp.Value;
             while (pool.Count > 0)
             {
-                GameObject obj = pool.Dequeue();
+                var obj = pool.Dequeue();
                 if (obj != null)
                 {
                     AddressableManager.Instance.ReleaseInstance(obj);
@@ -156,8 +205,12 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
 
         gameObjectPools.Clear();
         Debug.Log("[ObjectPoolManager] 모든 풀 정리 완료");
+
+        if (testModeOn) ClearAllContainers();
     }
 
+
+    #region  에디터 용 함수
     public Dictionary<string, int> GetPoolInfo()
     {
         Dictionary<string, int> info = new Dictionary<string, int>();
@@ -168,43 +221,113 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
         return info;
     }
 
-    /// <summary>
-    /// 상세 정보: 키별로 오브젝트 리스트(이름, timeInPool, timeUntilCleanup) 반환
-    /// </summary>
-    public Dictionary<string, List<(string objName, float timeInPool, float timeUntilCleanup)>> GetDetailedPoolInfo()
+    public struct DetailedObjectInfo
     {
-        Dictionary<string, List<(string, float, float)>> detailedInfo = new Dictionary<string, List<(string, float, float)>>();
+        public string objName;
+        public float timeInPool;
+        public float timeUntilCleanup;
+    }
+
+    public Dictionary<string, List<DetailedObjectInfo>> GetDetailedPoolInfo()
+    {
+        Dictionary<string, List<DetailedObjectInfo>> result = new Dictionary<string, List<DetailedObjectInfo>>();
 
         float now = Time.time;
         foreach (var kvp in gameObjectPools)
         {
             string key = kvp.Key;
-            Queue<GameObject> pool = kvp.Value;
-            // Queue 순회 위해 잠시 ToArray()
-            // GC 할당 최소화를 위해 상황에 따라 다른 접근 가능하지만 여기선 단순성 유지
-            var arr = pool.ToArray();
-
-            List<(string, float, float)> list = new List<(string, float, float)>(arr.Length);
-            for (int i = 0; i < arr.Length; i++)
+            var pool = kvp.Value.ToArray();
+            List<DetailedObjectInfo> list = new List<DetailedObjectInfo>(pool.Length);
+            for (int i = 0; i < pool.Length; i++)
             {
-                GameObject obj = arr[i];
+                GameObject obj = pool[i];
                 float usedTime;
-                if (lastUsedTime.TryGetValue(obj, out usedTime))
+                lastUsedTime.TryGetValue(obj, out usedTime);
+
+                float timeInPool = (usedTime == 0f) ? 0f : now - usedTime;
+                float timeUntilCleanup = objectLifetime - timeInPool;
+                if (timeUntilCleanup < 0f) timeUntilCleanup = 0f;
+
+                DetailedObjectInfo infoItem = new DetailedObjectInfo
                 {
-                    float timeInPool = now - usedTime;
-                    float timeUntilCleanup = OBJECT_LIFETIME - timeInPool;
-                    list.Add((obj.name, timeInPool, timeUntilCleanup));
-                }
-                else
-                {
-                    // 기록 없는 경우 방금 반환된 것으로 간주
-                    list.Add((obj.name, 0f, OBJECT_LIFETIME));
-                }
+                    objName = obj.name,
+                    timeInPool = timeInPool,
+                    timeUntilCleanup = timeUntilCleanup
+                };
+                list.Add(infoItem);
             }
 
-            detailedInfo[key] = list;
+            result[key] = list;
         }
 
-        return detailedInfo;
+        return result;
     }
+
+    public async UniTask Preload(string key, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            var obj = await SpawnAsync(key, Vector3.zero, Quaternion.identity, this.transform);
+            if (obj != null)
+            {
+                Despawn(key, obj);
+            }
+        }
+
+        Debug.Log($"[ObjectPoolManager] Preload 완료: {key}, {count}개");
+    }
+
+    private void CreateContainerForKey(string key)
+    {
+        if (!testModeOn) return;
+        if (t_ContainerDict.ContainsKey(key)) return;
+        var container = new GameObject($"[PoolContainer] {key}");
+        t_ContainerDict[key] = container;
+        UpdateContainerName(key);
+    }
+
+    private void SetParentToContainer(string key, GameObject obj)
+    {
+        if (!testModeOn) return;
+        if (t_ContainerDict.TryGetValue(key, out GameObject container))
+        {
+            obj.transform.SetParent(container.transform);
+        }
+        UpdateContainerName(key);
+    }
+
+    private void UpdateContainerName(string key)
+    {
+        if (!testModeOn) return;
+        if (t_ContainerDict.TryGetValue(key, out GameObject container))
+        {
+            int totalCount = 0;
+            if (gameObjectPools.TryGetValue(key, out var pool))
+                totalCount = pool.Count;
+
+            container.name = $"[PoolContainer] {key} : {totalCount} in pool";
+        }
+    }
+
+    private void RemoveContainer(string key)
+    {
+        if (!testModeOn) return;
+        if (t_ContainerDict.TryGetValue(key, out GameObject container))
+        {
+            Destroy(container);
+            t_ContainerDict.Remove(key);
+        }
+    }
+
+    private void ClearAllContainers()
+    {
+        if (!testModeOn) return;
+        foreach (var kvp in t_ContainerDict)
+        {
+            if (kvp.Value != null)
+                Destroy(kvp.Value);
+        }
+        t_ContainerDict.Clear();
+    }
+    #endregion
 }
