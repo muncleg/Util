@@ -34,7 +34,7 @@ public class ObjectPoolDebugWindow : EditorWindow
         }
 
         GUILayout.Label("현재 풀 상태:", EditorStyles.boldLabel);
-        var info = manager.GetPoolInfo();
+        var info = manager.GetDetailedPoolInfo();
         if (info.Count == 0)
         {
             GUILayout.Label("풀에 아무것도 없습니다.");
@@ -43,7 +43,9 @@ public class ObjectPoolDebugWindow : EditorWindow
         {
             foreach (var kvp in info)
             {
-                GUILayout.Label($"{kvp.Key} : {kvp.Value}개");
+                GUILayout.Label($"풀 키: {kvp.Key}", EditorStyles.boldLabel);
+                GUILayout.Label($"오브젝트 수: {kvp.Value.Count}개");
+                GUILayout.Space(10); // 풀 사이에 여백
             }
         }
 
@@ -79,12 +81,12 @@ public class ObjectPoolDebugWindow : EditorWindow
             }
         }
 
-        EditorGUILayout.Space();
-        if (GUILayout.Button("Clear All Pools"))
-        {
-            manager.ClearAll();
-            Debug.Log("[ObjectPoolDebugWindow] All pools cleared.");
-        }
+        // EditorGUILayout.Space();
+        // if (GUILayout.Button("Clear All Pools"))
+        // {
+        //     //  manager.ClearAll();
+        //     Debug.Log("[ObjectPoolDebugWindow] All pools cleared.");
+        // }
     }
 }
 #endif

@@ -1,96 +1,103 @@
-using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.AddressableAssets;
+using UnityEngine.ResourceManagement.AsyncOperations;
 using Cysharp.Threading.Tasks;
+using System;
+using System.Collections.Generic;
 using System.Linq;
+
+[Serializable]
+public class PoolData
+{
+    public string Key;
+    public int InitialCount = 10;
+    public int MaxCount = 50;
+    public float MaxLifetime = 30f;
+}
 
 public class ObjectPoolManager : Singleton<ObjectPoolManager>
 {
-    private Dictionary<string, Queue<GameObject>> gameObjectPools = new Dictionary<string, Queue<GameObject>>();
-    private Dictionary<GameObject, float> lastUsedTime = new Dictionary<GameObject, float>();
-
-    [Header("Settings")]
     [SerializeField] private float cleanupInterval = 10f;
-    [SerializeField] private float objectLifetime = 30f;
-
-    [Header("Debug / Test")]
     [SerializeField] private bool testModeOn = false;
 
-    // 테스트 모드 전용 : 컨테이너 관리
-    private Dictionary<string, GameObject> t_ContainerDict;
+    private Dictionary<string, PoolData> poolDataDict = new Dictionary<string, PoolData>();
+    private Dictionary<string, Queue<GameObject>> pools = new Dictionary<string, Queue<GameObject>>();
+    private Dictionary<GameObject, float> lastUsedTime = new Dictionary<GameObject, float>();
+
+    private Dictionary<string, GameObject> containerDict;
 
     private void Awake()
     {
-        t_ContainerDict = new Dictionary<string, GameObject>();
+        containerDict = new Dictionary<string, GameObject>();
         CleanupRoutine().Forget();
     }
 
-    private async UniTaskVoid CleanupRoutine()
+    /// <summary>
+    /// 새로운 풀을 최초로 등록하는 메서드.
+    /// 해당 키가 이미 존재하면 경고 로그 출력.
+    /// </summary>
+    public void Register(string key, int initialCount = 0, int maxCount = 50, float maxLifetime = 30f)
     {
-        while (true)
+        if (poolDataDict.ContainsKey(key))
         {
-            await UniTask.Delay((int)(cleanupInterval * 1000));
-            CleanUpOldObjects();
+            Debug.LogWarning($"[ObjectPoolManager] Register 실패: 이미 {key} 키에 대한 PoolData 존재. UpdatePoolData를 사용하세요.");
+            return;
         }
+
+        PoolData data = new PoolData
+        {
+            Key = key,
+            InitialCount = initialCount,
+            MaxCount = maxCount,
+            MaxLifetime = maxLifetime
+        };
+
+        poolDataDict[key] = data;
+        pools[key] = new Queue<GameObject>();
+
+        if (testModeOn) CreateContainerForKey(key);
+
+        Preload(key, initialCount).Forget();
     }
 
-    private void CleanUpOldObjects()
+    /// <summary>
+    /// 이미 등록된 풀의 정책 변경
+    /// (MaxCount나 MaxLifetime 변경)
+    /// </summary>
+    public void UpdatePoolData(string key, int maxCount, float maxLifetime)
     {
-        float now = Time.time;
-        var keys = gameObjectPools.Keys.ToList();
-
-        for (int i = 0; i < keys.Count; i++)
+        if (!poolDataDict.TryGetValue(key, out var data))
         {
-            string key = keys[i];
-            Queue<GameObject> pool = gameObjectPools[key];
-            int poolCount = pool.Count;
-            List<GameObject> remaining = new List<GameObject>(poolCount);
-
-            while (pool.Count > 0)
-            {
-                GameObject obj = pool.Dequeue();
-                if (lastUsedTime.TryGetValue(obj, out float usedTime))
-                {
-                    float timeInPool = now - usedTime;
-                    if (timeInPool > objectLifetime)
-                    {
-                        AddressableManager.Instance.ReleaseInstance(obj);
-                        lastUsedTime.Remove(obj);
-                    }
-                    else
-                    {
-                        remaining.Add(obj);
-                    }
-                }
-                else
-                {
-                    lastUsedTime[obj] = Time.time;
-                    remaining.Add(obj);
-                }
-            }
-
-            for (int j = 0; j < remaining.Count; j++)
-            {
-                pool.Enqueue(remaining[j]);
-            }
-
-            if (testModeOn)
-            {
-                UpdateContainerName(key);
-            }
+            Debug.LogWarning($"[ObjectPoolManager] UpdatePoolData 실패: {key} 키에 대한 PoolData 없음. 먼저 Register 호출 필요.");
+            return;
         }
+
+        data.MaxCount = maxCount;
+        data.MaxLifetime = maxLifetime;
+        poolDataDict[key] = data;
+
+        // 정책 변경 후 정리
+        CleanUpOldObjects();
     }
 
     public async UniTask<GameObject> SpawnAsync(string key, Vector3 position, Quaternion rotation, Transform parent = null)
     {
-        if (!gameObjectPools.ContainsKey(key))
+        // 키가 없으면 기본 정책으로 Register
+        if (!poolDataDict.ContainsKey(key))
         {
-            gameObjectPools[key] = new Queue<GameObject>();
+            Debug.Log($"[ObjectPoolManager] SpawnAsync: {key} 키 PoolData 없음. 기본값으로 Register");
+            Register(key, initialCount: 0, maxCount: 50, maxLifetime: 30f);
+        }
+
+        if (!pools.ContainsKey(key))
+        {
+            pools[key] = new Queue<GameObject>();
             if (testModeOn) CreateContainerForKey(key);
         }
 
-        var pool = gameObjectPools[key];
-
+        var pool = pools[key];
         GameObject obj;
+
         if (pool.Count > 0)
         {
             obj = pool.Dequeue();
@@ -98,59 +105,65 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
         }
         else
         {
-            GameObject newObj = await AddressableManager.Instance.InstantiateAsync(key, position, rotation, parent);
-            if (newObj == null)
+            var loadedPrefab = await AddressableManager.Instance.LoadAssetAsync<GameObject>(key);
+            if (loadedPrefab == null)
             {
-                Debug.LogError($"[ObjectPoolManager] 스폰 실패: {key}");
+                Debug.LogError($"[ObjectPoolManager] SpawnAsync 실패: 프리팹 로드 실패 {key}");
                 return null;
             }
 
-            obj = newObj;
+            // 인스턴스화
+            var objHandle = Addressables.InstantiateAsync(key, position, rotation, parent);
+            await objHandle.Task.AsUniTask();
+            if (objHandle.Status != UnityEngine.ResourceManagement.AsyncOperations.AsyncOperationStatus.Succeeded || objHandle.Result == null)
+            {
+                Debug.LogError($"[ObjectPoolManager] SpawnAsync 실패: 인스턴스화 실패 {key}");
+                return null;
+            }
+            obj = objHandle.Result;
         }
 
         obj.transform.SetPositionAndRotation(position, rotation);
         obj.transform.parent = parent;
+        obj.name = key;
         obj.SetActive(true);
 
-        if (testModeOn)
-        {
-            SetParentToContainer(key, obj);
-            UpdateContainerName(key);
-        }
+        if (testModeOn) SetParentToContainer(key, obj);
 
         return obj;
     }
 
-    public void Despawn(string key, GameObject obj)
+    public void Despawn(GameObject obj)
     {
         if (obj == null)
         {
-            Debug.LogWarning($"[ObjectPoolManager] 디스폰하려는 오브젝트가 null입니다: {key}");
+            Debug.LogWarning($"[ObjectPoolManager] Despawn: null obj");
             return;
         }
 
-        if (!gameObjectPools.ContainsKey(key))
+        string key = obj.name;
+
+        if (!pools.ContainsKey(key))
         {
-            gameObjectPools[key] = new Queue<GameObject>();
-            if (testModeOn) CreateContainerForKey(key);
+            // 해당 키에 대한 풀 미등록 상태
+            Debug.LogWarning($"[ObjectPoolManager] Despawn 실패: {key} 키에 대한 풀 미등록 상태. 오브젝트 파괴(내 풀로 관리 안 함)");
+            Destroy(obj);
+            return;
         }
 
         obj.SetActive(false);
         obj.transform.parent = this.transform;
-        gameObjectPools[key].Enqueue(obj);
+        pools[key].Enqueue(obj);
         lastUsedTime[obj] = Time.time;
 
-        if (testModeOn)
-        {
-            UpdateContainerName(key);
-        }
+        if (testModeOn) UpdateContainerName(key);
     }
 
     public void Despawn(string key, GameObject obj, float delay)
     {
         if (delay <= 0f)
         {
-            Despawn(key, obj);
+            Despawn(obj);
         }
         else
         {
@@ -160,67 +173,131 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
 
     private async UniTaskVoid DespawnDelayed(string key, GameObject obj, float delay)
     {
-        await UniTask.Delay((int)(delay * 1000));
-        if (obj == null) return;
-        if (obj.activeSelf)
+        await UniTask.Delay(TimeSpan.FromSeconds(delay));
+        if (obj != null && obj.activeSelf)
         {
-            Despawn(key, obj);
+            Despawn(obj);
         }
     }
 
-    public void ClearPool(string key)
+    public async UniTask Preload(string key, int count)
     {
-        if (gameObjectPools.TryGetValue(key, out var pool))
+        for (int i = 0; i < count; i++)
         {
-            while (pool.Count > 0)
+            var obj = await SpawnAsync(key, Vector3.zero, Quaternion.identity, transform);
+            if (obj != null)
+            {
+                Despawn(obj);
+            }
+        }
+
+        Debug.Log($"[ObjectPoolManager] Preload 완료: {key}, {count}개");
+    }
+
+    private async UniTaskVoid CleanupRoutine()
+    {
+        while (true)
+        {
+            await UniTask.Delay(TimeSpan.FromSeconds(cleanupInterval));
+            CleanUpOldObjects();
+        }
+    }
+
+    private void CleanUpOldObjects()
+    {
+        float now = Time.time;
+        foreach (var key in pools.Keys.ToList())
+        {
+            var pool = pools[key];
+            if (!poolDataDict.TryGetValue(key, out var poolData)) continue;
+
+            int currentCount = pool.Count;
+
+            // 최대 개수 초과 처리
+            while (currentCount > poolData.MaxCount)
             {
                 var obj = pool.Dequeue();
                 if (obj != null)
                 {
-                    AddressableManager.Instance.ReleaseInstance(obj);
+                    Addressables.ReleaseInstance(obj);
                     lastUsedTime.Remove(obj);
+                    currentCount--;
                 }
             }
-            gameObjectPools.Remove(key);
 
-            if (testModeOn) RemoveContainer(key);
-        }
-    }
-
-    public void ClearAll()
-    {
-        foreach (var kvp in gameObjectPools)
-        {
-            var pool = kvp.Value;
-            while (pool.Count > 0)
+            // 생명주기 초과 처리
+            var toRemove = new List<GameObject>();
+            foreach (var obj in pool)
             {
-                var obj = pool.Dequeue();
-                if (obj != null)
+                if (lastUsedTime.TryGetValue(obj, out float usedTime))
                 {
-                    AddressableManager.Instance.ReleaseInstance(obj);
+                    if (now - usedTime > poolData.MaxLifetime)
+                    {
+                        toRemove.Add(obj);
+                    }
+                }
+            }
+
+            if (toRemove.Count > 0)
+            {
+                var newQueue = new Queue<GameObject>(pool.Where(o => !toRemove.Contains(o)));
+                pools[key] = newQueue;
+
+                foreach (var obj in toRemove)
+                {
+                    Addressables.ReleaseInstance(obj);
                     lastUsedTime.Remove(obj);
                 }
             }
+
+            if (testModeOn) UpdateContainerName(key);
         }
-
-        gameObjectPools.Clear();
-        Debug.Log("[ObjectPoolManager] 모든 풀 정리 완료");
-
-        if (testModeOn) ClearAllContainers();
     }
 
-
-    #region  에디터 용 함수
-    public Dictionary<string, int> GetPoolInfo()
+    #region TestMode
+    private void CreateContainerForKey(string key)
     {
-        Dictionary<string, int> info = new Dictionary<string, int>();
-        foreach (var kvp in gameObjectPools)
+        if (!testModeOn) return;
+        if (containerDict == null) containerDict = new Dictionary<string, GameObject>();
+        if (!containerDict.ContainsKey(key))
         {
-            info[kvp.Key] = kvp.Value.Count;
+            var c = new GameObject($"[PoolContainer] {key}");
+            containerDict[key] = c;
+            UpdateContainerName(key);
         }
-        return info;
     }
 
+    private void SetParentToContainer(string key, GameObject obj)
+    {
+        if (!testModeOn) return;
+        if (containerDict.TryGetValue(key, out var c))
+        {
+            obj.transform.SetParent(c.transform);
+            UpdateContainerName(key);
+        }
+    }
+
+    private void UpdateContainerName(string key)
+    {
+        if (!testModeOn) return;
+        if (!containerDict.TryGetValue(key, out var c)) return;
+
+        int count = pools[key].Count;
+        int maxCount = poolDataDict[key].MaxCount;
+        c.name = $"[PoolContainer] {key} : {count} / {maxCount}";
+    }
+
+    private void RemoveContainer(string key)
+    {
+        if (!testModeOn) return;
+        if (containerDict.TryGetValue(key, out var c))
+        {
+            Destroy(c);
+            containerDict.Remove(key);
+        }
+    }
+
+    [System.Serializable]
     public struct DetailedObjectInfo
     {
         public string objName;
@@ -233,101 +310,50 @@ public class ObjectPoolManager : Singleton<ObjectPoolManager>
         Dictionary<string, List<DetailedObjectInfo>> result = new Dictionary<string, List<DetailedObjectInfo>>();
 
         float now = Time.time;
-        foreach (var kvp in gameObjectPools)
+        foreach (var kvp in pools)
         {
             string key = kvp.Key;
             var pool = kvp.Value.ToArray();
             List<DetailedObjectInfo> list = new List<DetailedObjectInfo>(pool.Length);
+
+            if (!poolDataDict.TryGetValue(key, out var poolData))
+            {
+                continue;
+            }
+
             for (int i = 0; i < pool.Length; i++)
             {
                 GameObject obj = pool[i];
-                float usedTime;
-                lastUsedTime.TryGetValue(obj, out usedTime);
-
-                float timeInPool = (usedTime == 0f) ? 0f : now - usedTime;
-                float timeUntilCleanup = objectLifetime - timeInPool;
-                if (timeUntilCleanup < 0f) timeUntilCleanup = 0f;
-
-                DetailedObjectInfo infoItem = new DetailedObjectInfo
+                if (lastUsedTime.TryGetValue(obj, out float usedTime))
                 {
-                    objName = obj.name,
-                    timeInPool = timeInPool,
-                    timeUntilCleanup = timeUntilCleanup
-                };
-                list.Add(infoItem);
+                    float timeInPool = now - usedTime;
+                    float timeUntilCleanup = poolData.MaxLifetime - timeInPool;
+                    if (timeUntilCleanup < 0f) timeUntilCleanup = 0f;
+
+                    DetailedObjectInfo infoItem = new DetailedObjectInfo
+                    {
+                        objName = obj.name,
+                        timeInPool = timeInPool,
+                        timeUntilCleanup = timeUntilCleanup
+                    };
+                    list.Add(infoItem);
+                }
+                else
+                {
+                    DetailedObjectInfo infoItem = new DetailedObjectInfo
+                    {
+                        objName = obj.name,
+                        timeInPool = 0f,
+                        timeUntilCleanup = poolData.MaxLifetime
+                    };
+                    list.Add(infoItem);
+                }
             }
 
             result[key] = list;
         }
 
         return result;
-    }
-
-    public async UniTask Preload(string key, int count)
-    {
-        for (int i = 0; i < count; i++)
-        {
-            var obj = await SpawnAsync(key, Vector3.zero, Quaternion.identity, this.transform);
-            if (obj != null)
-            {
-                Despawn(key, obj);
-            }
-        }
-
-        Debug.Log($"[ObjectPoolManager] Preload 완료: {key}, {count}개");
-    }
-
-    private void CreateContainerForKey(string key)
-    {
-        if (!testModeOn) return;
-        if (t_ContainerDict.ContainsKey(key)) return;
-        var container = new GameObject($"[PoolContainer] {key}");
-        t_ContainerDict[key] = container;
-        UpdateContainerName(key);
-    }
-
-    private void SetParentToContainer(string key, GameObject obj)
-    {
-        if (!testModeOn) return;
-        if (t_ContainerDict.TryGetValue(key, out GameObject container))
-        {
-            obj.transform.SetParent(container.transform);
-        }
-        UpdateContainerName(key);
-    }
-
-    private void UpdateContainerName(string key)
-    {
-        if (!testModeOn) return;
-        if (t_ContainerDict.TryGetValue(key, out GameObject container))
-        {
-            int totalCount = 0;
-            if (gameObjectPools.TryGetValue(key, out var pool))
-                totalCount = pool.Count;
-
-            container.name = $"[PoolContainer] {key} : {totalCount} in pool";
-        }
-    }
-
-    private void RemoveContainer(string key)
-    {
-        if (!testModeOn) return;
-        if (t_ContainerDict.TryGetValue(key, out GameObject container))
-        {
-            Destroy(container);
-            t_ContainerDict.Remove(key);
-        }
-    }
-
-    private void ClearAllContainers()
-    {
-        if (!testModeOn) return;
-        foreach (var kvp in t_ContainerDict)
-        {
-            if (kvp.Value != null)
-                Destroy(kvp.Value);
-        }
-        t_ContainerDict.Clear();
     }
     #endregion
 }
