@@ -15,7 +15,8 @@
 
 테스트 모드를 사용 시 히어라키 자동 정리 기능 추가.
 * 테스트 모드는 편의를 위해 bool 작성 필요하다면 전처리로 변경
-![오브젝트 풀 관련 툴 및 히어라키 정리](https://github.com/user-attachments/assets/c7e231d9-7870-458c-826e-d381e24df51e)
+
+![오브젝트 풀 관련 툴](https://github.com/user-attachments/assets/67864794-7cda-4481-ae5d-f65f17095f6c)
 
 # 애니메이션툴
 
